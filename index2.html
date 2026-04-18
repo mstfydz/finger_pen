@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>mstf.ydz</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { margin: 0; background: #050301; overflow: hidden; }
+    video { display: none; }
+    canvas {
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+      position: absolute;
+      z-index: 1;
+    }
+  </style>
+</head>
+
+<body>
+
+<video id="vid"></video>
+<canvas id="c"></canvas>
+
+<script>
+const vid = document.getElementById('vid');
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+
+let paths = [];
+let currentPath = [];
+let isDrawing = false;
+/** Poz kısa süre kaybolsa çizgiyi koparmamak için kare sayacı */
+let badPoseStreak = 0;
+
+let sx = null;
+let sy = null;
+
+const GRACE_FRAMES = 10;
+const SMOOTH = 0.55;
+/** İşaret ucuna yakın orta / yüzük / serçe ucu */
+const NEAR_INDEX_TIP = 0.08;
+/** Titremeyi azaltmak için: işaret net uzun, diğerleri net kapalı */
+const EXTEND_RATIO = 1.04;
+const FOLD_RATIO = 0.96;
+
+function dist2D(a, b) {
+  const dx = a.x - b.x;
+  const dy = a.y - b.y;
+  return Math.sqrt(dx * dx + dy * dy);
+}
+
+function isFingerClearlyExtended(lm, tipIdx, pipIdx) {
+  const dTip = dist2D(lm[0], lm[tipIdx]);
+  const dPip = dist2D(lm[0], lm[pipIdx]);
+  return dTip > dPip * EXTEND_RATIO;
+}
+
+function isFingerClearlyFolded(lm, tipIdx, pipIdx) {
+  const dTip = dist2D(lm[0], lm[tipIdx]);
+  const dPip = dist2D(lm[0], lm[pipIdx]);
+  return dTip < dPip * FOLD_RATIO;
+}
+
+/** Sadece işaret parmağı uzatılmış; diğerleri kapalı. */
+function isOnlyIndexFingerUp(lm) {
+  return (
+    isFingerClearlyExtended(lm, 8, 6) &&
+    isFingerClearlyFolded(lm, 12, 10) &&
+    isFingerClearlyFolded(lm, 16, 14) &&
+    isFingerClearlyFolded(lm, 20, 18) &&
+    isFingerClearlyFolded(lm, 4, 3)
+  );
+}
+
+/** İşaret ucunun yanına orta / yüzük / serçe ucu çok yakınsa çizim yok. */
+function isOtherFingerTipNearIndex(lm) {
+  const idx = lm[8];
+  for (const t of [12, 16, 20]) {
+    if (dist2D(idx, lm[t]) < NEAR_INDEX_TIP) return true;
+  }
+  return false;
+}
+
+/** Çizgiyi lineTo yerine quadratic ile yumuşat (kesik görünümü azaltır) */
+function strokeSmoothPath(ctx, path) {
+  const n = path.length;
+  if (n < 2) return;
+  ctx.beginPath();
+  ctx.moveTo(path[0].x, path[0].y);
+  if (n === 2) {
+    ctx.lineTo(path[1].x, path[1].y);
+    ctx.stroke();
+    return;
+  }
+  for (let i = 1; i < n - 1; i++) {
+    const p = path[i];
+    const q = path[i + 1];
+    ctx.quadraticCurveTo(p.x, p.y, (p.x + q.x) / 2, (p.y + q.y) / 2);
+  }
+  const last = path[n - 1];
+  ctx.lineTo(last.x, last.y);
+  ctx.stroke();
+}
+
+/* CANVAS resize sadece gerektiğinde */
+function resizeCanvas() {
+  c.width = window.innerWidth;
+  c.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+/* KLAVYE */
+window.addEventListener('keydown', (e) => {
+  if (e.code === 'Space') paths = [];
+});
+
+/* ANA LOOP */
+function run(res) {
+
+  ctx.drawImage(res.image, 0, 0, c.width, c.height);
+
+  ctx.fillStyle = 'rgba(10, 6, 2, 0.85)';
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  ctx.shadowColor = '#F5D061';
+  ctx.shadowBlur = 15;
+  ctx.strokeStyle = '#F5D061';
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* eski çizimler */
+  for (let path of paths) {
+    strokeSmoothPath(ctx, path);
+  }
+
+  /* el varsa */
+  if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+
+    let lm = res.multiHandLandmarks[0];
+
+    drawConnectors(ctx, lm, HAND_CONNECTIONS, {
+      color: 'rgba(245,208,97,0.3)',
+      lineWidth: 2
+    });
+
+    drawLandmarks(ctx, lm, {
+      color: '#FFFFFF',
+      lineWidth: 1,
+      radius: 2
+    });
+
+    let finger = lm[8];
+    let rx = finger.x * c.width;
+    let ry = finger.y * c.height;
+
+    /* kalem hissi: imleç yumuşatma */
+    if (sx === null) {
+      sx = rx;
+      sy = ry;
+    } else {
+      sx += (rx - sx) * SMOOTH;
+      sy += (ry - sy) * SMOOTH;
+    }
+
+    const rawPoseOk =
+      isOnlyIndexFingerUp(lm) && !isOtherFingerTipNearIndex(lm);
+    if (rawPoseOk) badPoseStreak = 0;
+    else if (isDrawing) badPoseStreak++;
+    else badPoseStreak = 0;
+
+    const strokeContinues =
+      rawPoseOk || (isDrawing && badPoseStreak <= GRACE_FRAMES);
+
+    /* imleç: çizim sürdürülürken veya poz tam iken beyaz */
+    ctx.beginPath();
+    ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+    ctx.fillStyle =
+      rawPoseOk || strokeContinues ? '#FFFFFF' : 'rgba(245,208,97,0.4)';
+    ctx.fill();
+
+    /* Çizim: kısa poz kaybında çizgiyi koparma */
+    if (strokeContinues) {
+      if (!isDrawing) {
+        isDrawing = true;
+        currentPath = [];
+        paths.push(currentPath);
+      }
+      currentPath.push({ x: sx, y: sy });
+    } else {
+      isDrawing = false;
+      badPoseStreak = 0;
+    }
+
+  } else {
+    isDrawing = false;
+    badPoseStreak = 0;
+    sx = null;
+    sy = null;
+  }
+}
+
+/* MEDIAPIPE */
+const hands = new Hands({
+  locateFile: (file) => {
+    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+  }
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+hands.onResults(run);
+
+/* CAMERA */
+const cam = new Camera(vid, {
+  onFrame: async () => {
+    await hands.send({ image: vid });
+  },
+  width: 1280,
+  height: 720
+});
+
+cam.start();
+
+</script>
+
+
+
+
+</body>
+</html>

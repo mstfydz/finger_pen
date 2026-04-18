@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <title>mstf.ydz</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+  <style>
+    body { margin: 0; background: #050301; overflow: hidden; }
+    video { display: none; }
+    canvas {
+      width: 100%;
+      height: 100%;
+      transform: scaleX(-1);
+      position: absolute;
+      z-index: 1;
+    }
+    .overlay-top-left {
+      position: fixed;
+      left: 16px;
+      top: 16px;
+      z-index: 2;
+      margin: 0;
+      font-family: system-ui, "Segoe UI", sans-serif;
+      font-size: 15px;
+      font-weight: 600;
+      color: #F5D061;
+      text-shadow: 0 0 12px rgba(245, 208, 97, 0.45);
+      pointer-events: none;
+      line-height: 1.45;
+    }
+    .overlay-top-left small {
+      display: block;
+      margin-top: 6px;
+      font-size: 12px;
+      font-weight: 400;
+      color: rgba(245, 208, 97, 0.75);
+      text-shadow: none;
+    }
+  </style>
+</head>
+
+<body>
+
+<video id="vid"></video>
+<canvas id="c"></canvas>
+
+<p class="overlay-top-left">
+  Takip edebilirsiniz : @mstf.ydz
+  <small>Shift Tuşu : çiz<br>
+  </bt></btr> Space Tulu: temizle</small>
+</p>
+
+<script>
+const vid = document.getElementById('vid');
+const c = document.getElementById('c');
+const ctx = c.getContext('2d');
+
+let paths = [];
+let currentPath = [];
+let isDrawing = false;
+let shift = false;
+
+let sx = null;
+let sy = null;
+
+/* CANVAS resize sadece gerektiğinde */
+function resizeCanvas() {
+  c.width = window.innerWidth;
+  c.height = window.innerHeight;
+}
+window.addEventListener('resize', resizeCanvas);
+resizeCanvas();
+
+/* KLAVYE */
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Shift') shift = true;
+  if (e.key === 'Shift') shift = true;
+  if (e.key === 'Shift') shift = true;
+  if (e.key === 'Shift') shift = true;
+  if (e.code === 'Space') paths = [];
+});
+
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Shift') shift = false;
+});
+
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Shift') shift = false;
+});
+
+/* ANA LOOP */
+function run(res) {
+
+  ctx.drawImage(res.image, 0, 0, c.width, c.height);
+
+  ctx.fillStyle = 'rgba(10, 6, 2, 0.85)';
+  ctx.fillRect(0, 0, c.width, c.height);
+
+  ctx.shadowColor = '#F5D061';
+  ctx.shadowBlur = 15;
+  ctx.strokeStyle = '#F5D061';
+  ctx.lineWidth = 6;
+  ctx.lineCap = 'round';
+  ctx.lineJoin = 'round';
+
+  /* eski çizimler */
+  for (let path of paths) {
+    ctx.beginPath();
+    path.forEach((p, i) => {
+      if (i === 0) ctx.moveTo(p.x, p.y);
+      else ctx.lineTo(p.x, p.y);
+    });
+    ctx.stroke();
+  }
+
+  /* el varsa */
+  if (res.multiHandLandmarks && res.multiHandLandmarks.length > 0) {
+
+    let lm = res.multiHandLandmarks[0];
+
+    drawConnectors(ctx, lm, HAND_CONNECTIONS, {
+      color: 'rgba(245,208,97,0.3)',
+      lineWidth: 2
+    });
+
+    drawLandmarks(ctx, lm, {
+      color: '#FFFFFF',
+      lineWidth: 1,
+      radius: 2
+    });
+
+    let finger = lm[8];
+    let rx = finger.x * c.width;
+    let ry = finger.y * c.height;
+
+    /* smoothing */
+    if (sx === null) {
+      sx = rx;
+      sy = ry;
+    } else {
+      sx += (rx - sx) * 0.4;
+      sy += (ry - sy) * 0.4;
+    }
+
+    /* imleç */
+    ctx.beginPath();
+    ctx.arc(sx, sy, 6, 0, Math.PI * 2);
+    ctx.fillStyle = shift ? '#FFFFFF' : 'rgba(245,208,97,0.4)';
+    ctx.fill();
+
+    /* çizim */
+    if (shift) {
+      if (!isDrawing) {
+        isDrawing = true;
+        currentPath = [];
+        paths.push(currentPath);
+      }
+      currentPath.push({ x: sx, y: sy });
+    } else {
+      isDrawing = false;
+    }
+
+  } else {
+    isDrawing = false;
+    sx = null;
+    sy = null;
+  }
+}
+
+/* MEDIAPIPE */
+const hands = new Hands({
+  locateFile: (file) => {
+    return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+  }
+});
+
+hands.setOptions({
+  maxNumHands: 1,
+  modelComplexity: 1,
+  minDetectionConfidence: 0.5,
+  minTrackingConfidence: 0.5
+});
+
+hands.onResults(run);
+
+/* CAMERA */
+const cam = new Camera(vid, {
+  onFrame: async () => {
+    await hands.send({ image: vid });
+  },
+  width: 1280,
+  height: 720
+});
+
+cam.start();
+
+</script>
+
+
+
+
+</body>
+</html>
